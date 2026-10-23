@@ -25,17 +25,17 @@ const (
 
 // onShowWindowRequest 显示窗口请求回调
 func (a *CoreApp) onShowWindowRequest() {
+	a.showWindowRequest(launchGUI)
+}
+
+func (a *CoreApp) showWindowRequest(launch func() error) {
 	a.logInfo("收到显示窗口请求")
 
-	// 通知所有已连接的 GUI 客户端显示窗口
-	if a.ipcServer != nil && a.ipcServer.HasClients() {
-		a.ipcServer.BroadcastEvent("show-window", nil)
-	} else {
-		// 没有 GUI 连接，启动 GUI
-		a.logInfo("没有 GUI 连接，尝试启动 GUI")
-		if err := launchGUI(); err != nil {
-			a.logError("启动 GUI 失败: %v", err)
-		}
+	// IPC observers can remain connected after the GUI exits. The GUI's existing
+	// single-instance lock owns window lifetime: launch when absent, or restore
+	// the existing window through OnSecondInstanceLaunch when already running.
+	if err := launch(); err != nil {
+		a.logError("启动 GUI 失败: %v", err)
 	}
 }
 
