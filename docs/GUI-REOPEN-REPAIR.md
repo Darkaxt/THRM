@@ -19,3 +19,16 @@ On Windows x64 with Go 1.27.3, a C compiler and go-winres v0.3.3, run `go test .
 Extract the complete portable package into its own version directory. Quit the old core normally before launching the new `THRM Core.exe`; keep the existing user profile. If Windows startup is enabled, update the existing THRM task's executable to that core while preserving its arguments, triggers, principal and settings. The GUI and its About version remain 3.7.3; the core's Windows file version is 3.7.3.1.
 
 To roll back, quit the repaired core, launch the retained original 3.7.3 core and restore the existing startup action's executable. User settings remain in the same profile. Upstream updates can replace this repair; recheck the reopening fix before updating. No new updater or device-control protocol is introduced.
+
+## Weekly Windows maintenance, 2026-11-02
+
+Authorization: existing weekly THRM/Taskbar Thermals upstream integration and installed-deployment automation. Preserve the current Windows 3.7.3 GUI/bridge and observer-aware reopening repair. Upstream main is 67091d5dea620f06585e5793b1f1eab68c96746e (16 commits beyond the integrated 2131102 baseline); the latest official normal release remains v3.7.3. Apply compatible Windows core maintenance from efa8176 (accurate caller logging), 172568b (one blocking native hotkey message loop) and ac3acb7 (avoid unnecessary tray icon redraws and repeated debug logs). Assess conflict resolution against the original GUI repair, hotkey lifecycle, local observer contract and unchanged device-control/config behavior.
+
+The unreleased 3.8 GUI/Wails3/firmware/driver feature migration is not part of this core-maintenance package: it requires a different GUI/bridge pairing and includes new firmware capabilities outside this maintenance outcome. Preserve the verified current pairing rather than mixing a 3.8 core with 3.7.3 GUI. BS1/Linux-only changes are inapplicable to this Windows BS2 Pro installation. General frontend/dependency/CI migrations accompany the unreleased GUI rather than this compatible backport. These are applicability decisions, not required work deferred from this maintenance package. No firmware, driver, security, voltage, WSL or profile changes.
+
+| Stage | Status | Acceptance |
+|---|---|---|
+| M1: Compatible Windows core integration | ACTIVE | Integrate the three identified upstream changes without losing reopening; verify affected native/core/logger/tray/IPC contracts, race/lifecycle where applicable, and build a complete 3.7.3.2 portable package reusing verified 3.7.3 GUI/bridge. No blockers or tracked deferrals currently. |
+| M2: Normal release and installed delivery | NOT STARTED | After M1, publish repair-v3.7.3.2 with ZIP/checksums, independently verify source/version/component hashes, update existing THRM startup and installation once through the broker, verify actual core/observer telemetry and unchanged settings, retain 3.7.3.1 rollback, and clean disposable output. |
+
+Only M1 is ACTIVE. Independent Taskbar Thermals upstream review follows THRM closure or justified parking. Required source/package verification must precede publication; any unavailable administrator approval or actual hardware acceptance remains an explicit delivery blocker, with the working installed core preserved. The separate Vader input check is unchanged and unverified.

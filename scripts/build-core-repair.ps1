@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$OutputDirectory,
     [Parameter(Mandatory)][string]$WinresPath,
-    [string]$Version = '3.7.3.1'
+    [string]$Version = '3.7.3.2'
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot
