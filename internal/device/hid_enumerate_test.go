@@ -2,6 +2,7 @@ package device
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +10,22 @@ import (
 
 	"github.com/TIANLI0/THRM/internal/types"
 )
+
+func TestHIDConnectionUsesSelectedEnumerationDescriptors(t *testing.T) {
+	found := []hidCandidate{
+		{productID: ProductIDBS2PRO, path: "selected", manufacturer: "Flydigi", product: "BS2 Pro", serial: "enumerated-serial"},
+		{productID: ProductIDBS2PRO, path: "another-interface", manufacturer: "wrong-interface"},
+	}
+	selected := pickHIDCandidates(found, supportedHIDProductIDs)
+	want := map[string]string{"manufacturer": "Flydigi", "product": "BS2 Pro", "serial": "enumerated-serial", "model": "BS2PRO", "productId": "0x1002"}
+	if got := hidConnectionInfo(selected[0], "BS2PRO"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("enumerated connection metadata = %v, want %v", got, want)
+	}
+	want = map[string]string{"manufacturer": "Unknown", "product": "BS2PRO", "serial": "Unknown", "model": "BS2PRO", "productId": "0x1002"}
+	if got := hidConnectionInfo(hidCandidate{productID: ProductIDBS2PRO}, "BS2PRO"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("missing descriptor metadata = %v, want %v", got, want)
+	}
+}
 
 // 一次枚举后的选取结果必须与逐个 hid.OpenFirst(VendorID, pid) 一致：
 // 按优先级顺序，每个产品 ID 取枚举顺序中的第一个接口。
