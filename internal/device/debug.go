@@ -40,9 +40,7 @@ func DebugCommandPresets() []types.DeviceDebugCommandPreset {
 
 func (m *Manager) writeHIDFrameLocked(cmd byte, payload []byte, reportLen int) error {
 	frame := deviceproto.BuildFrame(cmd, payload...)
-	report := deviceproto.BuildReport(frame, reportLen)
-	m.recordDebugFrame("tx", types.DeviceTypeHID, report)
-	_, err := m.device.Write(report)
+	_, err := m.writeHIDReportLocked(frame, reportLen)
 	return err
 }
 

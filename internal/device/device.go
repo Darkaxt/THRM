@@ -4,6 +4,7 @@ package device
 import (
 	"encoding/binary"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -214,6 +215,8 @@ type Manager struct {
 	realtimeWakeGen     uint64
 	lightConfig         types.LightStripConfig
 	hasLightConfig      bool
+	lastLightProgram    lightProgram
+	hasLightProgram     bool
 	smartLightPreset    byte
 	hasSmartLightPreset bool
 	// smartLightBandIndex 是当前生效的温度区间下标，回差判定与界面展示都依赖它。
@@ -279,6 +282,13 @@ type Manager struct {
 	debugFrames []types.DeviceDebugFrame
 	queryMutex  sync.Mutex
 	responses   *responseBroker
+	linkHealth  hidLinkHealth
+	// hidapi's Windows write timeout leaves its OVERLAPPED request pending.
+	// Reusing that handle can reuse the same native I/O state and report buffer.
+	hidWritePoisoned error
+	// Keep buffers alive until their owning native handle is closed, including
+	// detached pre-suspend handles that may finish closing after a reconnect.
+	pendingHIDWrites map[*hid.Device][]byte
 }
 
 // NewManager 创建新的设备管理器
@@ -445,13 +455,15 @@ func (m *Manager) connect(preferLastTransport bool) (bool, map[string]string) {
 	if err == nil && device != nil {
 		// HID 连接成功 (BS2/BS2PRO/BS3/BS3PRO)
 		m.device = device
+		m.hidWritePoisoned = nil
 		m.isConnected = true
 		m.productID = connectedProductID
 		m.deviceType = types.DeviceTypeHID
 		m.lastDeviceType = types.DeviceTypeHID
 		m.currentFanData.Store(nil)
 		m.resetRealtimeControlStateLocked()
-		m.connectionGen.Add(1)
+		generation := m.connectionGen.Add(1)
+		m.linkHealth.reset(generation)
 
 		// 为本次连接创建独立的监控生命周期信号。
 		m.monitorStop = make(chan struct{})
@@ -465,7 +477,7 @@ func (m *Manager) connect(preferLastTransport bool) (bool, map[string]string) {
 		m.logInfo("设备连接成功: %s %s (型号: %s)", info["manufacturer"], info["product"], modelName)
 
 		// 开始监控设备数据（显式传入本次连接的句柄与信号，避免与后续重连串扰）
-		go m.monitorDeviceData(device, m.monitorStop, m.monitorDone)
+		go m.monitorDeviceData(device, m.monitorStop, m.monitorDone, generation)
 
 		return true, info
 	}
@@ -534,7 +546,17 @@ func (m *Manager) DisconnectForRecovery() {
 }
 
 func (m *Manager) disconnect(notify, detachOnTimeout bool) {
+	m.disconnectGeneration(notify, detachOnTimeout, 0)
+}
+
+// A recovery queued by an old connection must never close a replacement handle.
+// Zero means an explicit caller, which intentionally targets the current link.
+func (m *Manager) disconnectGeneration(notify, detachOnTimeout bool, generation uint64) {
 	m.mutex.Lock()
+	if generation != 0 && (m.connectionGen.Load() != generation || (!m.realtimeWriteRecoveryScheduled && m.hidWritePoisoned == nil)) {
+		m.mutex.Unlock()
+		return
+	}
 	if !m.isConnected {
 		m.mutex.Unlock()
 		return
@@ -588,8 +610,8 @@ func (m *Manager) disconnect(notify, detachOnTimeout bool) {
 	}
 
 	// 没有监控协程（异常情况）时，安全关闭并清理。
-	m.closeDeviceLocked(dev)
 	m.mutex.Lock()
+	m.closeDeviceLocked(dev)
 	if m.device == dev {
 		m.device = nil
 		m.isConnected = false
@@ -637,6 +659,7 @@ func (m *Manager) resetLightStateCacheLocked() {
 	m.hasRGBEnabled = false
 	m.hasGearLight = false
 	m.hasLightConfig = false
+	m.hasLightProgram = false
 	m.hasSmartLightPreset = false
 	m.smartLightBandIndex = -1
 	m.smartLightTemperature = 0
@@ -699,6 +722,8 @@ func (m *Manager) closeDeviceLocked(dev *hid.Device) {
 		}
 	}()
 	dev.Close()
+	runtime.KeepAlive(m.pendingHIDWrites[dev])
+	delete(m.pendingHIDWrites, dev)
 }
 
 // IsConnected 检查设备是否已连接
@@ -806,7 +831,7 @@ func (m *Manager) waitPollInterval(stop <-chan struct{}) bool {
 // 该协程是 HID 句柄的唯一拥有者：无论因停止信号还是读错误退出，都由它负责关闭句柄
 // （见 finalizeMonitor），从而避免“读操作进行中被其他协程 Close”导致的 cgo 崩溃
 // （典型触发场景：睡眠唤醒后句柄失效，读卡住时执行断开）。
-func (m *Manager) monitorDeviceData(device *hid.Device, stop <-chan struct{}, done chan struct{}) {
+func (m *Manager) monitorDeviceData(device *hid.Device, stop <-chan struct{}, done chan struct{}, generation uint64) {
 	// 退出时统一收尾：关闭句柄、清理状态、按需触发断连回调。
 	defer m.finalizeMonitor(device, done)
 
@@ -855,6 +880,9 @@ func (m *Manager) monitorDeviceData(device *hid.Device, stop <-chan struct{}, do
 			consecutiveErrors++
 			if consecutiveErrors == 1 || consecutiveErrors%5 == 0 {
 				m.logError("读取设备数据失败 (%d/%d): %v", consecutiveErrors, maxConsecutiveReadErrors, err)
+				if consecutiveErrors == 1 {
+					m.logLinkHealth("首次底层读取错误")
+				}
 			}
 
 			if consecutiveErrors >= maxConsecutiveReadErrors {
@@ -879,6 +907,10 @@ func (m *Manager) monitorDeviceData(device *hid.Device, stop <-chan struct{}, do
 		}
 
 		raw := buffer[:n]
+		if m.connectionGen.Load() != generation {
+			return
+		}
+		m.linkHealth.record(generation, false, raw, time.Now())
 		m.recordDebugFrame("rx", types.DeviceTypeHID, raw)
 		if frame, ok := deviceproto.ParseFrame(raw); ok && frame.ChecksumOK {
 			m.responses.deliver(frame)
@@ -948,6 +980,9 @@ func (m *Manager) finalizeMonitor(device *hid.Device, done chan struct{}) {
 	wasConnected := m.isConnected
 	explicit := m.explicitDisconnect
 	notifyOnExplicit := m.disconnectNotify
+	if !explicit {
+		m.logLinkHealth("读循环异常退出，关闭 HID 句柄")
+	}
 
 	m.closeDeviceLocked(device)
 	m.device = nil
@@ -1270,17 +1305,39 @@ func (m *Manager) noteRealtimeWriteResultLocked(success bool) {
 		return
 	}
 	m.realtimeWriteRecoveryScheduled = true
-	m.logError("实时转速连续写入失败 %d 次，主动断开并重连设备", m.consecutiveRealtimeWriteErrors)
+	generation := m.connectionGen.Load()
+	m.logWarn("实时转速连续写入失败 %d 次，先查询链路状态再决定是否重连", m.consecutiveRealtimeWriteErrors)
+	m.logLinkHealth("转速控制连续失败")
 
 	go func() {
 		m.mutex.Lock()
 		shouldRecover := m.realtimeWriteRecoveryScheduled &&
-			m.consecutiveRealtimeWriteErrors >= maxConsecutiveRealtimeWriteErrors
-		m.mutex.Unlock()
-		if shouldRecover {
-			m.Disconnect()
+			m.consecutiveRealtimeWriteErrors >= maxConsecutiveRealtimeWriteErrors &&
+			m.connectionGen.Load() == generation && m.isConnected && m.device != nil
+		if !shouldRecover {
+			m.mutex.Unlock()
+			return
 		}
+		// 0x25 is read-only. A missing/rejected control ACK does not prove a
+		// Bluetooth disconnection; confirm with a separate command first.
+		frame, err := m.sendHIDCommandAndWaitLocked(deviceproto.CmdQueryWorkMode, nil, hidControlReportLen, deviceResponseTimeout)
+		probeOK := err == nil && len(frame.Payload) > 0
+		if !realtimeRecoveryNeedsDisconnect(probeOK, m.linkHealth.alive(time.Now())) {
+			m.noteRealtimeWriteResultLocked(true)
+			m.realtimeMode = false
+			m.hasCommandedRPM = false
+			m.logWarn("转速控制失败但设备仍在应答/上报，保留蓝牙连接，下次重新同步实时模式（状态查询成功=%t）", probeOK)
+			m.mutex.Unlock()
+			return
+		}
+		m.logLinkHealth("查询无应答且无近期有效上报，执行主动恢复")
+		m.mutex.Unlock()
+		m.disconnectGeneration(true, false, generation)
 	}()
+}
+
+func realtimeRecoveryNeedsDisconnect(probeOK, recentResponse bool) bool {
+	return !probeOK && !recentResponse
 }
 
 // EnterAutoMode 进入自动模式

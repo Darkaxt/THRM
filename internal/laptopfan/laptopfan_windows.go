@@ -75,10 +75,6 @@ func (r *windowsReader) read() (FanSpeeds, bool) {
 	if r.unsupported {
 		return FanSpeeds{}, false
 	}
-	if r.worker == nil {
-		r.worker = newCOMWorker()
-	}
-
 	// 已锁定后端：只用它读取。它已经证明本机可用，连续失败不永久停用——唤醒后 WMI
 	// 重建期间常有几秒的失败，停用会让转速在本次运行里一直消失——改为退避后重试。
 	if r.backendIdx >= 0 {
@@ -136,6 +132,11 @@ func lockedBackendRetryDelay(failures int) time.Duration {
 
 // runBackend 在 COM 工作线程上执行一次后端读取。
 func (r *windowsReader) runBackend(backend fanBackend) (FanSpeeds, error) {
+	// A preceding backend timeout retires its worker. Recreate at this call
+	// boundary so the next backend in the same probe cannot dereference nil.
+	if r.worker == nil {
+		r.worker = newCOMWorker()
+	}
 	// 结果经缓冲 channel 交回：超时返回后调用可能仍在工作线程上跑完，
 	// 不能让它去写一个调用方已经不再读的局部变量。
 	result := make(chan FanSpeeds, 1)

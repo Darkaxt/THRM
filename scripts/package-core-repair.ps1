@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$OutputDirectory,
     [Parameter(Mandatory)][string]$WinresPath,
-    [string]$Version = '3.7.3.3'
+    [string]$Version = '3.7.3.4'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
@@ -30,7 +30,7 @@ Copy-Item (Join-Path $root 'docs/GUI-REOPEN-REPAIR.md') (Join-Path $package 'REP
 $files = @(Get-ChildItem $package -File -Recurse | ForEach-Object {
     @{path=[IO.Path]::GetRelativePath($package,$_.FullName); sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
 })
-@{version=$Version; coreSource=$revision; upstreamSource='2131102526c8772211896ce23dd24a93065a37d3'; maintenanceCommits=@('efa8176e288b4cb876f17f495cab86b431baf29a','172568b0d3cfd62ba6ac1a3e112d10255b97b8dc','ac3acb7dc3ea039170d17b1211ca5e16e5f1b645','6637f14c5d5c9ca250ed1dfd1215d1f50a4a2afb'); upstreamVersion='3.7.3'; upstreamUrl=$upstreamUrl; upstreamSha256=$upstreamHash; files=$files} |
+@{version=$Version; coreSource=$revision; upstreamSource='2131102526c8772211896ce23dd24a93065a37d3'; maintenanceCommits=@('efa8176e288b4cb876f17f495cab86b431baf29a','172568b0d3cfd62ba6ac1a3e112d10255b97b8dc','ac3acb7dc3ea039170d17b1211ca5e16e5f1b645','6637f14c5d5c9ca250ed1dfd1215d1f50a4a2afb','cf405d20ee43609b12e4150eca8fa3736c39b4dd','68e99d09b6861b106b188b8d97d040ae0c4a2799','7ae35fec1f1c9c2f514806ebc8adaa5889ce5436','d2355962c09e006fff7e073c18170db656705e66','da0c69e1e760e1f5d2ae5fe05782ecd7efef1fd9'); evaluatedUpstream='42274826ba42aaad84d986951f33f119b287bba3'; upstreamVersion='3.7.3'; upstreamUrl=$upstreamUrl; upstreamSha256=$upstreamHash; files=$files} |
     ConvertTo-Json -Depth 8 | Set-Content (Join-Path $package 'provenance.json') -Encoding utf8NoBOM
 $archive = Join-Path $output "THRM-$Version-windows-x64.zip"
 Compress-Archive -Path (Join-Path $package '*') -DestinationPath $archive -CompressionLevel Optimal

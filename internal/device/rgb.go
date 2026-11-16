@@ -2,6 +2,7 @@ package device
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/TIANLI0/THRM/internal/deviceproto"
 	"github.com/TIANLI0/THRM/internal/types"
@@ -79,9 +80,11 @@ func (m *Manager) setLightStripLocked(cfg types.LightStripConfig) error {
 
 	switch cfg.Mode {
 	case "off":
+		m.hasLightProgram = false
 		return m.setRGBOffLocked()
 	case "smart_temp":
-		return m.setLightSmartTempLocked()
+		m.hasLightProgram = false
+		return m.setLightSmartTempLocked(cfg)
 	case "static_single":
 		color := firstOrDefaultColor(cfg.Colors)
 		return m.setLightStaticSingleLocked(color, brightness)
@@ -241,8 +244,14 @@ func (p *lightProgram) setColor(led, keyframe int, color types.RGBColor) {
 }
 
 func (m *Manager) applyLightFramesLocked(program lightProgram) error {
+	if m.hasLightProgram && m.lastLightProgram == program && m.hasRGBEnabled && m.rgbEnabled {
+		return nil
+	}
+	// A partial upload invalidates the previous known program; only an
+	// acknowledged final commit can establish the new cache entry.
+	m.hasLightProgram = false
 	// Firmware flow: make sure the LED output is on, initialize the frame
-	// buffer, write frame 0..30, then commit. 0x45 is only a status query and
+	// buffer, write frame 0..18, then commit. 0x45 is only a status query and
 	// must not be mixed into this write transaction.
 	//
 	// The old sequence toggled 0x46 off then on before every upload. The
@@ -275,6 +284,10 @@ func (m *Manager) applyLightFramesLocked(program lightProgram) error {
 	m.awaitFlashWriteWindowLocked()
 	err := m.sendLightCommandLocked(deviceproto.CmdRGBCommit, 0x01)
 	m.noteFlashWriteLocked()
+	if err == nil {
+		m.lastLightProgram = program
+		m.hasLightProgram = true
+	}
 	return err
 }
 
@@ -353,7 +366,13 @@ func (m *Manager) setLightBreathingLocked(colors []types.RGBColor, speed, bright
 	return m.applyLightFramesLocked(program)
 }
 
-func (m *Manager) setLightSmartTempLocked() error {
+func (m *Manager) setLightSmartTempLocked(cfg types.LightStripConfig) error {
+	if m.hasLightConfig && m.lightConfig.Mode == "smart_temp" && m.hasSmartLightPreset {
+		if !slices.Equal(m.lightConfig.SmartTempBands, cfg.SmartTempBands) || m.lightConfig.SmartTempHysteresis != cfg.SmartTempHysteresis {
+			m.smartLightBandIndex = -1
+		}
+		return nil
+	}
 	// The computer selects a firmware preset as its temperature changes.
 	// A custom upload leaves its animation active. Tear that state down before
 	// selecting a native preset; 0x44 applies its generated table immediately,
@@ -361,7 +380,7 @@ func (m *Manager) setLightSmartTempLocked() error {
 	defer m.beginTransaction()()
 
 	preset := byte(types.SmartTempLightMinPreset)
-	if bands, _ := types.NormalizeSmartTempLightBands(m.lightConfig.SmartTempBands); len(bands) > 0 {
+	if bands, _ := types.NormalizeSmartTempLightBands(cfg.SmartTempBands); len(bands) > 0 {
 		preset = byte(bands[0].Preset)
 	}
 	for _, step := range smartLightActivationSequence(preset) {
@@ -426,10 +445,13 @@ func (m *Manager) UpdateSmartTemperatureLight(temperature int) error {
 	m.smartLightTemperature = temperature
 
 	next := byte(bands[index].Preset)
-	if m.hasSmartLightPreset && index == m.smartLightBandIndex && next == m.smartLightPreset {
+	if m.hasSmartLightPreset && next == m.smartLightPreset {
+		m.smartLightBandIndex = index
 		return nil
 	}
 	if err := m.sendLightCommandLocked(deviceproto.CmdRGBDynamicParam, next); err != nil {
+		// A missing ACK leaves the actual preset unknown.
+		m.hasSmartLightPreset = false
 		return err
 	}
 	m.smartLightPreset = next
